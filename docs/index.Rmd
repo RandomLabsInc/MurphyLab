@@ -1,0 +1,363 @@
+---
+title: "Paula 16-plex"
+author: "Pat"
+date: "22/11/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+
+library(rmarkdown)
+
+```
+#### set messages to FALSE on everything (prevents certain boring things from being shown in the results)
+```{r}
+
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE,collapse = TRUE) 
+
+```
+#### PACKAGES
+```{r}
+
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(viridis)
+library(data.table)
+library(pheatmap)
+library(tidyverse)
+library(ggthemes)
+library(clipr)
+library(tidyr)
+library(matrixStats)
+library(ggrepel)
+library(cowplot)
+
+```
+## plus genefilter if needed
+```{r}
+
+##if (!requireNamespace("BiocManager", quietly = TRUE))
+    ##install.packages("BiocManager")
+##BiocManager::install("genefilter")
+library(genefilter)
+
+```
+#### COLORS
+```{r}
+
+mycolors<-c(viridis(15))
+felix_cols<-mycolors[c(5,2)]
+felix_4cols<-mycolors[c(15,10,8,2)]
+plain_cols1<-c("blue","gray")
+plain_cols2<-c("gray","#481B6DFF")
+pats_cols<-colorRampPalette(c("#FDE725FF", "white","#440154FF"))(21)
+leos_cols<-colorRampPalette(c("white","blue"))(10)
+leos_8cols<-mycolors[c(5,5,5,5,2,2,2,2)]
+mukha_cols<-mycolors[c(5,5,5,5,5,2,2,2,2,2,4,4,4,3,3,3)]
+beaus_colors<-colorRampPalette(c("white","#28aee4","#081534"))(25)
+
+```
+#### LOAD, NORMALIZE AND ORGANIZA DATA (protein data b is the failed labeling for the NAD)
+```{r}
+
+## load the dataset
+protein_data<-read_csv(file="protein_quant_16_plex.csv")
+##protein_data<-read_csv(file="protein_data.csv")
+
+## sums with all data
+#sums<-protein_data %>% 
+ #select(Ctrl_1:GAA_5) %>%
+  #colSums();correction_factors<-max(sums)/sums;correction_factors
+
+## creatine 2 and ctrl  are way too far off
+
+##make column sums
+sums<-protein_data %>% 
+  select(MCF_ctrl_1:MDA_KD_4) %>%
+  colSums()
+##correction factors from the column sums
+correction_factors<-max(sums)/sums
+
+correction_factors
+
+
+##corrected data
+protein_data_norm<-protein_data %>% 
+  select(MCF_ctrl_1:MDA_KD_4) %>% 
+  sweep(2, correction_factors, "*")
+
+sums<-protein_data_norm %>% 
+  select(MCF_ctrl_1:MDA_KD_4) %>%
+  colSums()
+
+##corrected data
+
+
+##bind the normalized data with the rest of the dataset
+n_protein_data<-protein_data %>% 
+  select(-c(MCF_ctrl_1:MDA_KD_4)) %>% 
+  cbind(protein_data_norm) 
+
+
+
+## make some new columns that store the mean values 
+n_protein_data<-n_protein_data %>% 
+  mutate(MCF_log_KD_ctrl=log2((MCF_KD_1+MCF_KD_2+MCF_KD_3+MCF_KD_4)/(MCF_ctrl_1+MCF_ctrl_2+MCF_ctrl_3+MCF_ctrl_4))) %>% 
+  mutate(MDA_log_KD_ctrl=log2((MDA_KD_1+MDA_KD_2+MDA_KD_3+MDA_KD_4)/(MDA_ctrl_1+MDA_ctrl_2+MDA_ctrl_3+MDA_ctrl_4)))
+
+
+```
+#### PVALUE STATS
+```{r}
+
+## use the genefilter package to calculate the p-values
+f1=factor(c(0,0,0,0,1,1,1,1)) ## need these factors for the different ttest
+
+
+
+Stats_MCF<-n_protein_data %>% select(MCF_ctrl_1:MCF_KD_4) %>% 
+  as.matrix() %>% 
+  rowttests(f1) %>% ## performs an ttest
+  select(p.value)
+
+Stats_MDA<-n_protein_data %>% select(MDA_ctrl_1:MDA_KD_4) %>% 
+  as.matrix() %>% 
+  rowttests(f1) %>% ## performs an ttest
+  select(p.value)
+
+
+
+```
+
+#### COMBINE STATS WITH DATA
+```{r}
+low_cutoff<--0.5
+
+## MCF-7
+
+n_protein_data_stats<-n_protein_data %>% 
+  cbind(Stats_MCF) %>% ## takes the pvalues and binds them to the dataset a new row
+  rename(MCF_pval=p.value) %>% 
+  mutate(MCF_adj_p=p.adjust(MCF_pval,method="BH")) %>% # adjust the p values for multiple-hypothesis testing
+  mutate(MCF_log_adj_p=-log10(MCF_adj_p)) %>% 
+  mutate(MCF_log_p=-log10(MCF_pval)) %>% 
+  mutate(MCF_significant=case_when(MCF_log_p>1.3 & (MCF_log_KD_ctrl<low_cutoff | MCF_log_KD_ctrl>0.5) ~ "significant"))
+
+
+n_protein_data_stats %>% group_by(MCF_significant) %>% 
+  summarise(n=n())
+
+## MDA 231
+
+n_protein_data_stats<-n_protein_data_stats %>% 
+  cbind(Stats_MDA) %>% ## takes the pvalues and binds them to the dataset a new row
+  rename(MDA_pval=p.value) %>% 
+  mutate(MDA_adj_p=p.adjust(MDA_pval,method="BH")) %>% # adjust the p values for multiple-hypothesis testing
+  mutate(MDA_log_adj_p=-log10(MDA_adj_p)) %>% 
+  mutate(MDA_log_p=-log10(MDA_pval)) %>% 
+  mutate(MDA_significant=case_when(MDA_log_p>1.3 & (MDA_log_KD_ctrl<low_cutoff | MDA_log_KD_ctrl>0.5) ~ "significant"))
+
+
+n_protein_data_stats %>% group_by(MDA_significant) %>% 
+  summarise(n=n())
+
+
+```
+#### ORGANIZE THE DATA PVALUES
+```{r}
+
+##n_protein_data_stats_sig<-n_protein_data_stats %>% 
+  ##mutate(significant_A_PISA=ifelse(pval_A_PISA<0.05, "significant","not significant"),
+        # significant_B_PISA=ifelse(pval_B_PISA<0.05, "significant","not significant")) ## see significance
+
+##n_protein_data_stats_sig %>% group_by(significant_A_PISA) %>% 
+  ##summarise(proteins=n())
+
+##n_protein_data_stats_sig %>% group_by(significant_B_PISA) %>% 
+  ##summarise(proteins=n())
+
+##export the data from r
+##write.csv(n_protein_data_stats_sig,"Ecoli_protein_data_stats_sig.csv")
+
+```
+#### ORGANIZE THE DATA ADJUSTED PVALUES
+```{r}
+
+
+
+
+
+```
+
+
+
+
+### VOLCANO PLOT WITH NON-ADJUSTED p-values
+```{r,fig.width=10,fig.height=7}
+
+## make a volcano MCF-7
+VP_PISA_MCF<-n_protein_data_stats %>%
+  arrange(desc(MCF_significant)) %>% 
+  ggplot(aes(x=MCF_log_KD_ctrl,
+             y=MCF_log_p,
+             description=`Gene`,
+             color=MCF_significant))+
+  geom_point(alpha=0.7,size=1)+
+  theme_light()+
+  scale_colour_manual(values=plain_cols1)+
+  theme(axis.text=element_text(size=12))
+
+##VP_PISA_MCF
+ggplotly(VP_PISA_MCF)
+
+
+## make a volcano MDA231
+VP_PISA_MDA<-n_protein_data_stats %>%
+  arrange(desc(MDA_significant)) %>% 
+  ggplot(aes(x=MDA_log_KD_ctrl,
+             y=MDA_log_p,
+             description=`Gene`,
+             color=MDA_significant))+
+  geom_point(alpha=0.7)+
+  theme_light()+
+  scale_colour_manual(values=plain_cols1)+
+  theme(axis.text=element_text(size=12))
+
+##VP_PISA_MDA
+ggplotly(VP_PISA_MDA)
+
+
+```
+
+## plot specific examples (based on the ttest showing differences between the fractions)
+## Top 20 only
+
+```{r}
+##filter(Gene=="SPR") %>%
+##slice_min(adj_pval_Anova,n=40)## us in place of filter to get the top anova-significant
+
+plot_specific_examples<-n_protein_data_stats %>%
+  filter(Gene=="AGO2") %>% 
+  slice_min(MCF_pval,n=10) %>% 
+   select(Gene,MCF_ctrl_1:MDA_KD_4) %>% 
+   ## this is the filter function, which we set up to filter by gene. If  you replace this with slicn_min, it will instead pull out the lowest Anova pvalues
+  pivot_longer(!Gene,names_to = "sample", values_to="Intensity") %>% 
+  separate(sample, into=c("cell_line","treatment","replicate"),sep="_",) %>% 
+  ggplot(aes(x=treatment,y=Intensity))+
+  facet_wrap(cell_line~Gene,scales="free_y")+
+  geom_boxplot(position="dodge")+
+  geom_jitter(width=0.2)+
+  theme(axis.text.x = element_text(angle = 90))+
+  scale_color_viridis_d()+
+  scale_fill_viridis_d()+
+  theme_bw()+
+  expand_limits(y=0)
+    
+
+plot_specific_examples
+
+```
+
+plot examples of several proteins if interest
+
+
+
+```{r}
+
+of_interest<-c("SORCS2")
+
+plot_specific_examples<-n_protein_data_stats %>%
+  filter(Gene %in% of_interest) %>% 
+   select(Gene,MCF_ctrl_1:MDA_KD_4) %>% 
+   ## this is the filter function, which we set up to filter by gene. If  you replace this with slicn_min, it will instead pull out the lowest Anova pvalues
+  pivot_longer(!Gene,names_to = "sample", values_to="Intensity")  %>% 
+  separate(sample, into=c("cell_line","treatment","replicate"),sep="_",) %>% 
+  ggplot(aes(x=treatment,y=Intensity))+
+  facet_wrap(cell_line~Gene)+
+  geom_boxplot(position="dodge")+
+  geom_jitter(width=0.2)+
+  theme(axis.text.x = element_text(angle = 90))+
+  scale_color_viridis_d()+
+  scale_fill_viridis_d()+
+  theme_bw()+
+  expand_limits(y=0)
+
+plot_specific_examples
+
+
+
+```
+
+Write out the fully processed data
+
+
+```{r}
+write_csv(n_protein_data_stats,file="processed_data.csv")
+
+
+```
+
+
+MA plot
+
+```{r}
+
+n_protein_data_stats_for_MA<-n_protein_data_stats %>%
+  mutate(MCF_rowprod=MCF_ctrl_1*MCF_ctrl_2*MCF_ctrl_3*MCF_ctrl_4*
+           MCF_KD_1*MCF_KD_2*MCF_KD_3*MCF_KD_4,
+         MDA_rowprod=MDA_ctrl_1*MDA_ctrl_2*MDA_ctrl_3*MDA_ctrl_4*
+           MDA_KD_1*MDA_KD_2*MDA_KD_3*MDA_KD_4) %>% 
+  mutate(MCF_A=(log2(MCF_rowprod)/2)) %>% 
+  mutate(MDA_A=(log2(MDA_rowprod)/2))
+
+
+
+
+```
+
+
+```{r}
+
+## make an MA plot of MCF-7
+VP_PISA_MCF<-n_protein_data_stats_for_MA %>%
+  arrange(MCF_significant) %>% 
+  ggplot(aes(y=MCF_log_KD_ctrl,
+             x=MCF_A,
+             description=`Gene`,
+             color=MCF_significant))+
+  geom_point(alpha=0.7,size=1)+
+  theme_light()+
+  scale_colour_manual(values=plain_cols1)+
+  theme(axis.text=element_text(size=12))
+
+##VP_PISA_MCF
+ggplotly(VP_PISA_MCF)
+
+
+
+## make an MA plot of MDA 231
+VP_PISA_MCF<-n_protein_data_stats_for_MA %>%
+  arrange(MCF_significant) %>% 
+  ggplot(aes(y=MDA_log_KD_ctrl,
+             x=MDA_A,
+             description=`Gene`,
+             color=MDA_significant))+
+  geom_point(alpha=0.7,size=1)+
+  theme_light()+
+  scale_colour_manual(values=plain_cols1)+
+  theme(axis.text=element_text(size=12))
+
+##VP_PISA_MCF
+ggplotly(VP_PISA_MCF)
+
+
+
+
+
+
+```
+
+
